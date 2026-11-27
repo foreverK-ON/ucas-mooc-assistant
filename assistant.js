@@ -1,7 +1,19 @@
 (() => {
   "use strict";
 
-  const courseId = "350140000041158";
+  let course;
+  let lastAddress;
+  let parsedCourse;
+  function currentCourse() {
+    if (location.href !== lastAddress) {
+      lastAddress = location.href;
+      parsedCourse = ucasCourse.read(lastAddress);
+    }
+    return parsedCourse;
+  }
+  function inCurrentCourse() {
+    return Boolean(course?.key && currentCourse()?.key === course.key);
+  }
   const practiceWords = "(?:章节|单元|随堂|课后)(?:测验|测试|练习|习题|作业)";
   const unit = "第\\s*[一二三四五六七八九十百两\\d]+\\s*(?:章|节|单元)";
   const practiceTitle = new RegExp(`^(?:${unit}\\s*(?:测验|测试|练习|习题|作业)|(?:\\d+(?:[.．-]\\d+)*[.．、]?\\s*)?${practiceWords})(?:$|[\\s:：（(]|[一二三四五六七八九十\\d])`);
@@ -169,8 +181,7 @@
       }
       if (destination.origin !== origin ||
           !(destination.pathname.startsWith("/mooc2-ans/") || destination.pathname.startsWith("/mooc-ans/mycourse/"))) return null;
-      const destinationCourse = numericParam(destination, "courseid");
-      if (destinationCourse && destinationCourse !== courseId) return null;
+      if (!ucasCourse.acceptsDestination(destination, course)) return null;
     }
     return control;
   }
@@ -192,9 +203,6 @@
     }
     return null;
   }
-
-  const url = new URL(location.href);
-  if (!url.pathname.includes("/mycourse/") || numericParam(url, "courseid") !== courseId) return;
 
   const panel = document.createElement("div");
   panel.style.cssText = "position:fixed;left:16px;bottom:16px;z-index:2147483647";
@@ -235,7 +243,8 @@
   const playback = shadow.getElementById("playback");
   let readerGrant;
   chrome.runtime.onMessage.addListener((message) => {
-    if (message?.type !== "pdf-access-result" || typeof message.text !== "string") return;
+    if (message?.type !== "pdf-access-result" || typeof message.text !== "string" ||
+        !inCurrentCourse() || message.courseKey !== course.key) return;
     const notice = shadow.getElementById("pdf-access");
     notice.textContent = message.text;
     notice.hidden = false;
@@ -247,25 +256,27 @@
     readerGrant.source = event.source;
   });
   const message = shadow.getElementById("message");
-  const modeKey = `ucas-study:auto-next:${courseId}`;
+  let modeKey;
   const speed = shadow.getElementById("speed");
-  const speedKey = modeKey + ":pdf-speed";
-  const savedSpeed = sessionStorage.getItem(speedKey);
-  speed.value = [...speed.options].some((option) => option.value === savedSpeed) ? savedSpeed : "end";
-  speed.addEventListener("change", () => sessionStorage.setItem(speedKey, speed.value));
-  let enabled = sessionStorage.getItem(modeKey) === "on";
+  speed.addEventListener("change", () => {
+    if (inCurrentCourse()) sessionStorage.setItem(modeKey + ":pdf-speed", speed.value);
+  });
+  let enabled = false;
   let ends = new WeakMap();
   let pending;
   let reading;
   let entryTimer;
   let entry;
   function showMode() {
-    shadow.getElementById("arm").disabled = enabled;
+    shadow.getElementById("arm").disabled = !course?.key || enabled;
     shadow.getElementById("stop").disabled = !enabled;
     shadow.getElementById("read").disabled = !enabled;
     playback.textContent = enabled ? "连续切换已开启，正在等待当前节点的课件。" : "连续切换已关闭。";
+    if (course && !course.key) {
+      const missing = [!course.courseId && "课程编号 courseId", !course.clazzid && "班级编号 clazzid"].filter(Boolean);
+      playback.textContent = "当前页面缺少有效的" + missing.join("和") + "，请从课程目录进入具体章节。";
+    }
   }
-  showMode();
 
   function chapterHeading(doc) {
     const chapter = numericParam(new URL(doc.URL), "chapterid", "knowledgeid", "nodeid");
@@ -357,7 +368,7 @@
 
   function bindButton(id, action) {
     shadow.getElementById(id).addEventListener("click", async (event) => {
-      if (!event.isTrusted) return;
+      if (!event.isTrusted || !inCurrentCourse()) return;
       try {
         await action();
       } catch {
@@ -395,7 +406,7 @@
       const options = { capture: true, signal: listeners.signal };
       doc.addEventListener("ended", onVideoEnded, options);
       doc.addEventListener("playing", (event) => {
-        if (event.isTrusted && event.target.tagName === "VIDEO") {
+        if (event.isTrusted && event.target.tagName === "VIDEO" && inCurrentCourse()) {
           ends.delete(event.target);
           cancelPending();
           stopReading();
@@ -424,11 +435,11 @@
   }
 
   function scheduleScan() {
-    if (scheduled || document.visibilityState !== "visible") return;
+    if (scheduled || !inCurrentCourse() || document.visibilityState !== "visible") return;
     scheduled = true;
     setTimeout(() => {
       scheduled = false;
-      if (document.visibilityState !== "visible" || numericParam(new URL(location.href), "courseid") !== courseId) return;
+      if (document.visibilityState !== "visible" || !inCurrentCourse()) return;
       const page = snapshot();
       const { documents: docs, players, pdfs } = page;
       observeDocuments(docs);
@@ -447,10 +458,8 @@
     }, 500);
   }
   document.addEventListener("visibilitychange", scheduleScan);
-  observeDocuments(snapshot().documents);
-  scheduleScan();
   bindButton("export", async () => {
-    const prefix = `practice:${courseId}:`;
+    const prefix = `practice:${course.courseId}:`;
     const all = await chrome.storage.local.get(null);
     const rows = Object.entries(all).filter(([key]) => key.startsWith(prefix)).map(([, row]) => row);
     if (!rows.length) {
@@ -481,7 +490,8 @@
     cancelPending();
     stopReading();
     clearInterval(entryTimer);
-    entry = undefined;
+    // A class switch can precede replacement of the old lesson's DOM.
+    if (!value || entry?.chapter) entry = undefined;
     ends = new WeakMap();
     showMode();
     if (value) watchEntries();
@@ -498,9 +508,10 @@
   }
 
   function chapterKey() {
+    if (!inCurrentCourse()) return "";
     const current = new URL(location.href);
     const chapter = numericParam(current, "chapterid", "knowledgeid", "nodeid") || currentChapter(document);
-    return [current.pathname, numericParam(current, "courseid"), chapter].join("|");
+    return [current.pathname, course.key, chapter].join("|");
   }
 
   function hasPlayingVideo(players) {
@@ -1056,14 +1067,15 @@
   }
 
   async function checkEntry() {
-    if (!enabled || document.visibilityState !== "visible" || numericParam(new URL(location.href), "courseid") !== courseId) return;
+    if (!enabled || document.visibilityState !== "visible" || !inCurrentCourse()) return;
+    const previousEntry = entry;
     const chapter = chapterKey();
     const heading = chapterHeading(document);
     const { title } = heading;
     let changed = chapter !== entry?.chapter ||
       (heading.node && title !== entry.heading.title && (entry.heading.node || quizName.test(title)));
     if (!changed && entry.started && !entry.startup && !entry.nextClick && !entry.awaitingFooter && !readerGrant?.source) return;
-    if (!await foreground() || !enabled || chapter !== chapterKey()) return;
+    if (!await foreground() || !enabled || chapter !== chapterKey() || entry !== previousEntry) return;
     let page;
     if (readerGrant && readerGrant.chapter !== chapter) readerGrant = null;
     if (!changed && entry.nextClick) {
@@ -1189,8 +1201,12 @@
 
   async function onVideoEnded(event) {
     const video = event.target;
-    if (!event.isTrusted || video.tagName !== "VIDEO" || !await foreground() || !enabled || !video.ended) return;
-    if (entry?.nextClick || quizName.test(currentChapter(document)) || numericParam(new URL(location.href), "courseid") !== courseId) return;
+    if (!event.isTrusted || video.tagName !== "VIDEO" || !enabled || !inCurrentCourse()) return;
+    const chapter = chapterKey();
+    const previousEntry = entry;
+    if (!await foreground() || !enabled || !video.ended || chapter !== chapterKey() || entry !== previousEntry) return;
+    if (entry?.nextClick || quizName.test(currentChapter(document))) return;
+    if (!entry?.started && entry?.previous?.get(video) === taskVersion(video)) return;
     const { players } = snapshot();
     if (!players.includes(video)) return;
     ends.set(video, video.currentSrc);
@@ -1207,5 +1223,41 @@
     if (document.visibilityState !== "visible") cancelPending();
   });
   window.addEventListener("pagehide", () => { cancelPending(); stopReading(); });
-  if (enabled) watchEntries();
+  function syncCourse() {
+    const next = currentCourse();
+    if (next?.courseId === course?.courseId && next?.clazzid === course?.clazzid && course !== undefined) return;
+    const previous = entry?.tasks || entry?.previous;
+    const previousHeading = entry?.heading || entry?.previousHeading;
+    cancelPending();
+    stopReading();
+    clearInterval(entryTimer);
+    observeDocuments([]);
+    readerGrant = null;
+    ends = new WeakMap();
+    entry = previous || previousHeading ? { previous, previousHeading } : undefined;
+    course = next;
+    modeKey = course?.key ? "ucas-study:auto-next:" + course.key : null;
+    enabled = Boolean(modeKey && sessionStorage.getItem(modeKey) === "on");
+    panel.hidden = !course;
+    speed.disabled = !modeKey;
+    shadow.getElementById("export").disabled = !modeKey;
+    shadow.getElementById("detected").textContent = "";
+    shadow.getElementById("pdf-access").hidden = true;
+    message.textContent = "";
+    showMode();
+    if (!modeKey) return;
+    // 1.7.4 stored speed per course. Only the new class-specific switch can enable a run.
+    const savedSpeed = sessionStorage.getItem(modeKey + ":pdf-speed") ??
+      sessionStorage.getItem("ucas-study:auto-next:" + course.courseId + ":pdf-speed");
+    speed.value = [...speed.options].some((option) => option.value === savedSpeed) ? savedSpeed : "end";
+    observeDocuments(snapshot().documents);
+    scheduleScan();
+    if (enabled) watchEntries();
+  }
+
+  window.addEventListener("pageshow", syncCourse);
+  window.addEventListener("popstate", syncCourse);
+  if (window.navigation) window.navigation.addEventListener("currententrychange", syncCourse);
+  else setInterval(syncCourse, 600);
+  syncCourse();
 })();

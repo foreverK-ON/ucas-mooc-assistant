@@ -4,7 +4,9 @@
   const preview = Boolean(extension?.id && extension.getManifest);
   const courseOrigin = preview ? new URL(extension.getManifest().content_scripts[0].matches[0]).origin : location.origin;
   const courseTab = window === window.top;
-  if (courseTab && (!preview || location.origin !== courseOrigin || !location.pathname.includes("/mycourse/"))) return;
+  // A matched course shell can enter /mycourse/ without reloading this document.
+  if (courseTab && (!preview || location.origin !== courseOrigin ||
+      !(location.pathname.startsWith("/mooc2-ans/") || location.pathname.startsWith("/mooc-ans/mycourse/")))) return;
   const ancestors = location.ancestorOrigins;
   const topOrigin = ancestors[ancestors.length - 1];
   if (topOrigin && topOrigin !== "null" && topOrigin !== courseOrigin) return;

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "国科大在线学习助手",
-  "version": "1.7.4",
+  "version": "1.8.0",
   "description": "按页面顺序接续视频与 PDF 阅读任务，自动跳过独立习题章节。",
   "permissions": ["storage", "contextMenus", "scripting"],
   "host_permissions": ["https://mooc.mooc.ucas.edu.cn/*"],
@@ -13,7 +13,7 @@
         "https://mooc.mooc.ucas.edu.cn/mooc2-ans/*",
         "https://mooc.mooc.ucas.edu.cn/mooc-ans/mycourse/*"
       ],
-      "js": ["pdf-module.js", "assistant.js"]
+      "js": ["course.js", "pdf-module.js", "assistant.js"]
     },
     {
       "matches": [
